@@ -1,5 +1,6 @@
-import type { Gap, ReviewResult } from "../api";
+import type { Gap, ReviewResult, SourceRange } from "../api";
 import { GAP_TYPE_LABEL, formatMs } from "../format";
+import { LocateButton } from "./LocateButton";
 
 function GapLocation({ gap }: { gap: Gap }) {
   if (gap.type === "between") {
@@ -12,7 +13,13 @@ function GapLocation({ gap }: { gap: Gap }) {
   return <span>第 {gap.line} 行字幕{gap.type === "head" ? "之前" : "之后"}</span>;
 }
 
-export function ResultPanel({ result }: { result: ReviewResult }) {
+export function ResultPanel({
+  result,
+  onLocate,
+}: {
+  result: ReviewResult;
+  onLocate: (range: SourceRange) => void;
+}) {
   return (
     <section
       className={`result ${result.passed ? "result--pass" : "result--fail"}`}
@@ -52,6 +59,11 @@ export function ResultPanel({ result }: { result: ReviewResult }) {
                   上限 {gap.limit_ms} ms
                 </span>
                 <GapLocation gap={gap} />
+                <LocateButton
+                  gap={gap}
+                  onLocate={onLocate}
+                  testid="violation-locate"
+                />
               </li>
             ))}
           </ul>
@@ -69,6 +81,7 @@ export function ResultPanel({ result }: { result: ReviewResult }) {
               <th>时长 (ms)</th>
               <th>采用上限 (ms)</th>
               <th>位置</th>
+              <th>原文</th>
             </tr>
           </thead>
           <tbody>
@@ -85,6 +98,13 @@ export function ResultPanel({ result }: { result: ReviewResult }) {
                 <td>{gap.limit_ms}</td>
                 <td>
                   <GapLocation gap={gap} />
+                </td>
+                <td>
+                  <LocateButton
+                    gap={gap}
+                    onLocate={onLocate}
+                    testid="gap-locate"
+                  />
                 </td>
               </tr>
             ))}

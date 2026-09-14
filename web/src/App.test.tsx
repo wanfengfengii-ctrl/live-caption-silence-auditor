@@ -45,6 +45,82 @@ async function fillAndSubmit() {
   await user.click(screen.getByTestId("submit"));
 }
 
+// Cue block with an identifier and a two-line payload: lines 3-6; the
+// second cue occupies lines 8-9.
+const LOCATE_VTT = [
+  "WEBVTT",
+  "",
+  "cue-1",
+  "00:00:01.000 --> 00:00:02.000",
+  "第一行",
+  "第二行",
+  "",
+  "00:00:04.000 --> 00:00:05.000",
+  "末条",
+].join("\n");
+
+const FIRST_BLOCK = "cue-1\n00:00:01.000 --> 00:00:02.000\n第一行\n第二行";
+const SECOND_BLOCK = "00:00:04.000 --> 00:00:05.000\n末条";
+
+const betweenGap: ReviewResult["gaps"][number] = {
+  type: "between",
+  start_ms: 2000,
+  end_ms: 4000,
+  duration_ms: 2000,
+  limit_ms: 1500,
+  line: 4,
+  to_line: 8,
+  source_ranges: [
+    { start_line: 3, end_line: 6 },
+    { start_line: 8, end_line: 9 },
+  ],
+};
+
+const locateResult: ReviewResult = {
+  passed: false,
+  max_gap_ms: 2000,
+  cue_count: 2,
+  gaps: [
+    {
+      type: "head",
+      start_ms: 0,
+      end_ms: 1000,
+      duration_ms: 1000,
+      limit_ms: 1500,
+      line: 4,
+      to_line: null,
+      source_ranges: [{ start_line: 3, end_line: 6 }],
+    },
+    betweenGap,
+    {
+      type: "tail",
+      start_ms: 5000,
+      end_ms: 5000,
+      duration_ms: 0,
+      limit_ms: 1500,
+      line: 8,
+      to_line: null,
+      source_ranges: [{ start_line: 8, end_line: 9 }],
+    },
+  ],
+  violations: [betweenGap],
+};
+
+async function submitLocateVtt() {
+  const user = userEvent.setup();
+  fireEvent.change(screen.getByTestId("input-vtt"), {
+    target: { value: LOCATE_VTT },
+  });
+  await user.click(screen.getByTestId("submit"));
+  await screen.findByTestId("verdict");
+  return user;
+}
+
+function selectedVttText(): string {
+  const textarea = screen.getByTestId("input-vtt") as HTMLTextAreaElement;
+  return textarea.value.slice(textarea.selectionStart, textarea.selectionEnd);
+}
+
 describe("App page states", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());
@@ -402,5 +478,86 @@ describe("App page states", () => {
       "不能为 null",
     );
     expect(screen.queryByTestId("source-error")).not.toBeInTheDocument();
+  });
+
+  it("locates the boundary cue blocks of a between gap in sequence", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse(locateResult));
+    render(<App />);
+    const user = await submitLocateVtt();
+
+    const textarea = screen.getByTestId("input-vtt") as HTMLTextAreaElement;
+    const gapLocates = screen.getAllByTestId("gap-locate");
+    expect(gapLocates).toHaveLength(3);
+
+    // 字幕间空档：点击依次选中前、后两个边界块，含标识符与多行正文的
+    // 整块都被准确选中，再次点击循环回前一块。
+    await user.click(gapLocates[1]);
+    expect(document.activeElement).toBe(textarea);
+    expect(selectedVttText()).toBe(FIRST_BLOCK);
+
+    await user.click(gapLocates[1]);
+    expect(selectedVttText()).toBe(SECOND_BLOCK);
+
+    await user.click(gapLocates[1]);
+    expect(selectedVttText()).toBe(FIRST_BLOCK);
+  });
+
+  it("locates from a violation item and from a zero-duration gap", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse(locateResult));
+    render(<App />);
+    const user = await submitLocateVtt();
+
+    // 违规列表中的定位按钮复用同一定位能力。
+    await user.click(screen.getByTestId("violation-locate"));
+    expect(selectedVttText()).toBe(FIRST_BLOCK);
+
+    // 零时长空档（片尾 0 ms）同样可以直接定位到最后一个字幕块。
+    const gapLocates = screen.getAllByTestId("gap-locate");
+    await user.click(gapLocates[2]);
+    expect(selectedVttText()).toBe(SECOND_BLOCK);
+  });
+
+  it("clears the verdict and locate state as soon as the source text changes", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse(locateResult));
+    render(<App />);
+    const user = await submitLocateVtt();
+
+    await user.click(screen.getAllByTestId("gap-locate")[1]);
+    expect(selectedVttText()).toBe(FIRST_BLOCK);
+
+    // 修改原文后旧审校结果与定位状态立即消失，且不会自动重新请求。
+    await user.type(screen.getByTestId("input-vtt"), "X");
+    expect(screen.queryByTestId("verdict")).not.toBeInTheDocument();
+    expect(screen.queryAllByTestId("gap-locate")).toHaveLength(0);
+    expect(screen.queryAllByTestId("violation-locate")).toHaveLength(0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables locate buttons with a reason when source ranges are missing", async () => {
+    // An older/foreign response without source_ranges (null or absent):
+    // the button is disabled and explains why, while the verdict itself
+    // stays fully readable.
+    const legacyResult: ReviewResult = {
+      ...failingResult,
+      gaps: failingResult.gaps.map((gap, index) =>
+        index === 0 ? { ...gap, source_ranges: null } : gap,
+      ),
+    };
+    vi.mocked(fetch).mockResolvedValue(jsonResponse(legacyResult));
+    render(<App />);
+    await fillAndSubmit();
+    await screen.findByTestId("verdict");
+
+    for (const button of screen.getAllByTestId("gap-locate")) {
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute(
+        "title",
+        expect.stringContaining("缺少原文定位数据"),
+      );
+    }
+    expect(screen.getByTestId("violation-locate")).toBeDisabled();
+    expect(screen.getByTestId("violation-duration")).toHaveTextContent(
+      "2500 ms",
+    );
   });
 });

@@ -215,3 +215,77 @@ test("分类上限：等待审校结果期间表单锁定，结果与当前配�
   await expect(page.getByTestId("verdict")).toHaveText("✅ 审校通过");
   await expect(page.getByTestId("input-gap-head")).toBeEnabled();
 });
+
+// Identifier + two-line payload: first cue block spans lines 3-6, the
+// second (no identifier) lines 8-9. Program 0..5000ms, limit 500ms:
+// head (1000ms) and between (2000ms) violate, tail is 0ms.
+const LOCATE_VTT =
+  "WEBVTT\n\n" +
+  "cue-1\n" +
+  "00:00:01.000 --> 00:00:02.000\n" +
+  "第一条\n" +
+  "第二行\n" +
+  "\n" +
+  "00:00:04.000 --> 00:00:05.000\n" +
+  "末条\n";
+const LOCATE_FIRST_BLOCK = "cue-1\n00:00:01.000 --> 00:00:02.000\n第一条\n第二行";
+const LOCATE_SECOND_BLOCK = "00:00:04.000 --> 00:00:05.000\n末条";
+
+async function selectedVttText(page: Page): Promise<string> {
+  return page
+    .getByTestId("input-vtt")
+    .evaluate((el: HTMLTextAreaElement) =>
+      el.value.slice(el.selectionStart, el.selectionEnd),
+    );
+}
+
+test("定位原文：从违规项选中对应字幕块，字幕间空档可切换两个边界块", async ({ page }: { page: Page }) => {
+  await page.goto("/");
+  await page.getByTestId("input-start").fill("0");
+  await page.getByTestId("input-end").fill("5000");
+  await page.getByTestId("input-limit").fill("500");
+  await page.getByTestId("input-vtt").fill(LOCATE_VTT);
+  await submit(page);
+  await expect(page.getByTestId("verdict")).toHaveText("❌ 审校不通过");
+
+  // Violations in timeline order: head, then between.
+  const violationLocate = page.getByTestId("violation-locate");
+  await expect(violationLocate).toHaveCount(2);
+
+  // The head violation locates the first cue block (identifier + payload).
+  await violationLocate.first().click();
+  await expect(page.getByTestId("input-vtt")).toBeFocused();
+  expect(await selectedVttText(page)).toBe(LOCATE_FIRST_BLOCK);
+
+  // The between violation cycles through its two boundary blocks.
+  await violationLocate.nth(1).click();
+  expect(await selectedVttText(page)).toBe(LOCATE_FIRST_BLOCK);
+  await violationLocate.nth(1).click();
+  expect(await selectedVttText(page)).toBe(LOCATE_SECOND_BLOCK);
+  await violationLocate.nth(1).click();
+  expect(await selectedVttText(page)).toBe(LOCATE_FIRST_BLOCK);
+
+  // The zero-duration tail gap is locatable from the all-gaps table too.
+  await page.getByTestId("gap-locate").nth(2).click();
+  expect(await selectedVttText(page)).toBe(LOCATE_SECOND_BLOCK);
+});
+
+test("定位原文：修改原文后旧审校结果与定位立即消失", async ({ page }: { page: Page }) => {
+  await page.goto("/");
+  await page.getByTestId("input-start").fill("0");
+  await page.getByTestId("input-end").fill("5000");
+  await page.getByTestId("input-limit").fill("500");
+  await page.getByTestId("input-vtt").fill(LOCATE_VTT);
+  await submit(page);
+  await expect(page.getByTestId("verdict")).toHaveText("❌ 审校不通过");
+
+  await page.getByTestId("violation-locate").first().click();
+  expect(await selectedVttText(page)).toBe(LOCATE_FIRST_BLOCK);
+
+  // Editing the source invalidates the old verdict's line numbers, so the
+  // result and every locate button disappear at once.
+  await page.getByTestId("input-vtt").fill("WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n新字幕\n");
+  await expect(page.getByTestId("verdict")).toHaveCount(0);
+  await expect(page.getByTestId("violation-locate")).toHaveCount(0);
+  await expect(page.getByTestId("gap-locate")).toHaveCount(0);
+});

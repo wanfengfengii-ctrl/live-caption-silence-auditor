@@ -1,13 +1,15 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   type ApiError,
   type GapLimits,
   type GapType,
   type ReviewInput,
   type ReviewResult,
+  type SourceRange,
   postReview,
 } from "./api";
 import { ResultPanel } from "./components/ResultPanel";
+import { selectionForRange } from "./locate";
 import { integerErrorMessage, parseInteger } from "./numberInput";
 
 const SAMPLE_VTT = `WEBVTT
@@ -70,6 +72,32 @@ export function ReviewPage() {
   // While a review is in flight every config input is locked, so the
   // returned verdict can never be displayed under an edited configuration.
   const [loading, setLoading] = useState(false);
+  const vttRef = useRef<HTMLTextAreaElement>(null);
+
+  // Focus the WebVTT source and select the cue block lines that form the
+  // located gap, scrolling the block into view.
+  function handleLocate(range: SourceRange) {
+    const textarea = vttRef.current;
+    if (!textarea) return;
+    const selection = selectionForRange(content, range);
+    if (!selection) return;
+    textarea.focus();
+    textarea.setSelectionRange(selection.start, selection.end);
+    const lineHeight = parseFloat(window.getComputedStyle(textarea).lineHeight);
+    const rowHeight = Number.isFinite(lineHeight) ? lineHeight : 18;
+    textarea.scrollTop = Math.max(
+      0,
+      (range.start_line - 1) * rowHeight - textarea.clientHeight / 2,
+    );
+  }
+
+  // Editing the source invalidates every line number in the old verdict, so
+  // the old result (and its locate buttons) is dropped immediately rather
+  // than left pointing at text that may have shifted.
+  function handleContentChange(value: string) {
+    setContent(value);
+    setResult(null);
+  }
 
   function buildInput(): ReviewInput | null {
     const errors: FieldErrors = {};
@@ -294,13 +322,14 @@ export function ReviewPage() {
         <label className="field field--full">
           <span>{FIELD_LABELS.content}</span>
           <textarea
+            ref={vttRef}
             value={content}
             rows={14}
             spellCheck={false}
             disabled={loading}
             data-testid="input-vtt"
             aria-invalid={Boolean(fieldErrors.content)}
-            onChange={(event) => setContent(event.target.value)}
+            onChange={(event) => handleContentChange(event.target.value)}
           />
           {fieldErrors.content && (
             <span className="field__error" data-testid="input-vtt-error">
@@ -335,7 +364,7 @@ export function ReviewPage() {
         </div>
       )}
 
-      {result && <ResultPanel result={result} />}
+      {result && <ResultPanel result={result} onLocate={handleLocate} />}
     </>
   );
 }

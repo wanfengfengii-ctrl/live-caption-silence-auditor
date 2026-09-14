@@ -44,11 +44,18 @@ BOM = "﻿"
 
 @dataclass(frozen=True)
 class Cue:
-    """One cue normalised to a millisecond interval."""
+    """One cue normalised to a millisecond interval.
+
+    ``line`` is the 1-based timing line used for error attribution;
+    ``start_line``/``end_line`` span the whole cue block (identifier and
+    payload lines included) so results can point back at the source text.
+    """
 
     start_ms: int
     end_ms: int
     line: int
+    start_line: int
+    end_line: int
     identifier: str | None = None
 
 
@@ -138,6 +145,8 @@ def parse_webvtt(content: str) -> list[Cue]:
                     start_ms=_timestamp_to_ms(caption, "start_time"),
                     end_ms=_timestamp_to_ms(caption, "end_time"),
                     line=timing_line,
+                    start_line=block_start,
+                    end_line=block_start + len(block_lines) - 1,
                     identifier=caption.identifier or None,
                 )
             )

@@ -533,5 +533,100 @@ def test_gap_limits_allows_zero_category_ceilings():
     assert [v["type"] for v in data["violations"]] == ["head", "between", "tail"]
 
 
+# ---------------------------------------------------------------------------
+# Source ranges (locate the cue blocks bounding each gap in the source)
+# ---------------------------------------------------------------------------
+
+
+def test_source_ranges_span_identifier_and_multiline_payload():
+    content = (
+        "WEBVTT\n\n"                            # lines 1-2
+        "cue-1\n"                               # line 3
+        "00:00:01.000 --> 00:00:02.000\n"       # line 4
+        "第一行\n"                              # line 5
+        "第二行\n"                              # line 6
+        "\n"                                    # line 7
+        "00:00:03.000 --> 00:00:04.000\n"       # line 8
+        "末条\n"                                # line 9
+    )
+    data = review(content, 0, 5000, 10000).json()
+    head, between, tail = data["gaps"]
+    # A head/tail gap points at its single bounding cue block; the whole
+    # block is spanned, identifier and multi-line payload included.
+    assert head["source_ranges"] == [{"start_line": 3, "end_line": 6}]
+    assert tail["source_ranges"] == [{"start_line": 8, "end_line": 9}]
+    # A between gap carries both boundary blocks, earlier cue first.
+    assert between["source_ranges"] == [
+        {"start_line": 3, "end_line": 6},
+        {"start_line": 8, "end_line": 9},
+    ]
+
+
+def test_source_ranges_skip_note_style_and_region_blocks():
+    content = (
+        "WEBVTT\n\n"                            # line 1
+        "NOTE a comment\n\n"                    # line 3
+        "1\n"                                   # line 5
+        "00:00:01.000 --> 00:00:02.000\n"       # line 6
+        "甲\n"                                  # line 7
+        "乙\n"                                  # line 8
+        "\n"                                    # line 9
+        "STYLE\n::cue { color: red }\n\n"       # lines 10-11
+        "REGION\nid:top\n\n"                    # lines 13-14
+        "2\n"                                   # line 16
+        "00:00:03.000 --> 00:00:04.000\n"       # line 17
+        "丙\n"                                  # line 18
+    )
+    data = review(content, 0, 5000, 10000).json()
+    head, between, tail = data["gaps"]
+    assert head["source_ranges"] == [{"start_line": 5, "end_line": 8}]
+    assert between["source_ranges"] == [
+        {"start_line": 5, "end_line": 8},
+        {"start_line": 16, "end_line": 18},
+    ]
+    assert tail["source_ranges"] == [{"start_line": 16, "end_line": 18}]
+
+
+def test_zero_duration_gaps_carry_source_ranges():
+    body = vtt(cue(0, 1000), cue(1000, 2000))
+    data = review(body, 0, 2000, 0).json()
+    assert [g["duration_ms"] for g in data["gaps"]] == [0, 0, 0]
+    # Even a 0 ms gap can be located in the source text.
+    assert data["gaps"][0]["source_ranges"] == [
+        {"start_line": 3, "end_line": 4}
+    ]
+    assert data["gaps"][1]["source_ranges"] == [
+        {"start_line": 3, "end_line": 4},
+        {"start_line": 6, "end_line": 7},
+    ]
+    assert data["gaps"][2]["source_ranges"] == [
+        {"start_line": 6, "end_line": 7}
+    ]
+
+
+def test_violations_carry_the_same_source_ranges_as_gaps():
+    body = vtt(cue(1000, 2000), cue(5000, 6000))
+    data = review(body, 0, 6000, 500).json()
+    assert [v["type"] for v in data["violations"]] == ["head", "between"]
+    by_type = {g["type"]: g["source_ranges"] for g in data["gaps"]}
+    for violation in data["violations"]:
+        assert violation["source_ranges"] == by_type[violation["type"]]
+        assert violation["source_ranges"]
+
+
+def test_source_ranges_are_additive_existing_gap_fields_unchanged():
+    body = vtt(cue(1000, 2000), cue(3000, 4000))
+    data = review(body, 0, 5000, 1500).json()
+    for gap in data["gaps"] + data["violations"]:
+        assert set(gap.keys()) == {
+            "type", "start_ms", "end_ms", "duration_ms", "limit_ms",
+            "line", "to_line", "source_ranges",
+        }
+    # The adjudication numbers are untouched by the new field.
+    assert [g["duration_ms"] for g in data["gaps"]] == [1000, 1000, 1000]
+    assert [g["limit_ms"] for g in data["gaps"]] == [1500, 1500, 1500]
+    assert data["passed"] is True
+
+
 def test_health():
     assert client.get("/health").json() == {"status": "ok"}

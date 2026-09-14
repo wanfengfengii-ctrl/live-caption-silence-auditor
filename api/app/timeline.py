@@ -80,6 +80,8 @@ class Gap:
     limit_ms: int                    # limit applied when adjudicating
     line: int | None = None          # cue line bounding the gap
     to_line: int | None = None       # second cue line for BETWEEN gaps
+    before_cue: Cue | None = None    # cue block closing the gap from before
+    after_cue: Cue | None = None     # cue block opening after the gap
 
 
 @dataclass(frozen=True)
@@ -118,6 +120,7 @@ def review(
             duration_ms=cues[0].start_ms - program_start_ms,
             limit_ms=limits[HEAD],
             line=cues[0].line,
+            after_cue=cues[0],
         )
     ]
 
@@ -131,6 +134,8 @@ def review(
                 limit_ms=limits[BETWEEN],
                 line=previous.line,
                 to_line=cue.line,
+                before_cue=previous,
+                after_cue=cue,
             )
         )
 
@@ -142,6 +147,7 @@ def review(
             duration_ms=program_end_ms - cues[-1].end_ms,
             limit_ms=limits[TAIL],
             line=cues[-1].line,
+            before_cue=cues[-1],
         )
     )
 
