@@ -19,3 +19,9 @@ export const GAP_TYPE_LABEL: Record<GapType, string> = {
   between: "字幕间隙",
   tail: "片尾空档",
 };
+
+export function formatPct(pct: number): string {
+  // Up to two decimals with trailing zeros trimmed: 50 -> "50%",
+  // 33.333… -> "33.33%".
+  return `${pct.toFixed(2).replace(/\.?0+$/, "")}%`;
+}

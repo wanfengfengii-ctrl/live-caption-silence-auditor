@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .coverage import Bucket, CoverageReport
 from .timeline import GAP_TYPES, Gap, Review
 
 _MS_FIELDS = ("program_start_ms", "program_end_ms", "max_silence_ms")
@@ -137,6 +138,108 @@ class ReviewResponse(BaseModel):
             gaps=[GapModel.from_gap(g) for g in review.gaps],
             violations=[GapModel.from_gap(g) for g in review.violations],
             cue_count=cue_count,
+        )
+
+
+class CoverageRequest(BaseModel):
+    """Parameters of one coverage-distribution audit.
+
+    Independent of the gap-review request: the bucket length is a positive
+    integer millisecond value and the low-coverage threshold is a
+    percentage within 0..100 (fractions allowed).
+    """
+
+    content: str = Field(..., description="WebVTT 原文")
+    program_start_ms: int = Field(
+        ..., ge=0, description="节目开始时间（非负整数毫秒）"
+    )
+    program_end_ms: int = Field(
+        ..., ge=0, description="节目结束时间（非负整数毫秒）"
+    )
+    bucket_ms: int = Field(..., gt=0, description="分桶时长（正整数毫秒）")
+    threshold_pct: float = Field(
+        ..., ge=0, le=100, description="低覆盖阈值（0 到 100 的百分比）"
+    )
+
+    @field_validator("program_start_ms", "program_end_ms", mode="before")
+    @classmethod
+    def _reject_non_integer(cls, value: Any) -> Any:
+        # Same rule as the gap review: JSON booleans/strings are not
+        # millisecond integers; fractional floats like 1.5 are rejected
+        # while integral floats (2.0) pass.
+        if isinstance(value, (bool, str)) or (
+            isinstance(value, float) and not value.is_integer()
+        ):
+            raise ValueError("必须是非负整数毫秒值")
+        return value
+
+    @field_validator("bucket_ms", mode="before")
+    @classmethod
+    def _reject_non_positive_integer(cls, value: Any) -> Any:
+        if isinstance(value, (bool, str)) or (
+            isinstance(value, float) and not value.is_integer()
+        ):
+            raise ValueError("必须是正整数毫秒值")
+        return value
+
+    @field_validator("threshold_pct", mode="before")
+    @classmethod
+    def _reject_non_number(cls, value: Any) -> Any:
+        # The threshold is a percentage number, not a millisecond integer;
+        # booleans and strings are still rejected outright.
+        if isinstance(value, (bool, str)):
+            raise ValueError("低覆盖阈值必须是 0 到 100 之间的数值。")
+        return value
+
+
+class BucketModel(BaseModel):
+    index: int
+    start_ms: int
+    end_ms: int
+    duration_ms: int
+    covered_ms: int
+    coverage_pct: float
+    low_coverage: bool
+
+    @classmethod
+    def from_bucket(cls, bucket: Bucket) -> "BucketModel":
+        return cls(
+            index=bucket.index,
+            start_ms=bucket.start_ms,
+            end_ms=bucket.end_ms,
+            duration_ms=bucket.duration_ms,
+            covered_ms=bucket.covered_ms,
+            coverage_pct=bucket.coverage_pct,
+            low_coverage=bucket.low_coverage,
+        )
+
+
+class CoverageResponse(BaseModel):
+    buckets: list[BucketModel]
+    bucket_count: int
+    cue_count: int
+    bucket_ms: int
+    threshold_pct: float
+    min_coverage_pct: float
+    low_coverage_count: int
+
+    @classmethod
+    def from_report(
+        cls,
+        report: CoverageReport,
+        *,
+        cue_count: int,
+        bucket_ms: int,
+        threshold_pct: float,
+    ) -> "CoverageResponse":
+        return cls(
+            buckets=[BucketModel.from_bucket(b) for b in report.buckets],
+            bucket_count=len(report.buckets),
+            cue_count=cue_count,
+            bucket_ms=bucket_ms,
+            threshold_pct=threshold_pct,
+            min_coverage_pct=report.min_coverage_pct,
+            low_coverage_count=report.low_coverage_count,
         )
 
 

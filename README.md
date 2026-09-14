@@ -1,9 +1,13 @@
-# 直播字幕空档审校（WebVTT Gap Review）
+# 直播字幕审校台（WebVTT Gap Review + Coverage）
 
-节目上线前发现**片头、字幕之间、片尾**过长无字幕空档的 Web + API 系统。
+节目上线前的字幕审校 Web + API 系统，提供两个独立入口：
+
+- **空档审校**：发现**片头、字幕之间、片尾**过长无字幕空档。
+- **覆盖分布**：按时间桶统计字幕覆盖毫秒数与覆盖率，发现低覆盖时段。
+
 页面粘贴 WebVTT 与节目时间参数，后端使用维护中的
 [`webvtt-py`](https://pypi.org/project/webvtt-py/) 解析库完成真正的格式解析，
-统一为毫秒区间后做时间轴校验与空档裁决，并返回结构化结果。
+统一为毫秒区间后做时间轴校验与裁决，并返回结构化结果。
 
 ## 裁决规则
 
@@ -24,6 +28,18 @@
   - 可归属到字幕源内容的**首个**错误带原始 **1-based 行号**（含 cue identifier 偏移）。
   - 参数错误指出责任字段（`field`）。
 
+## 覆盖分布规则
+
+- 节目区间 `[开始, 结束]` 按**正整数分桶时长**（毫秒）顺序切桶；
+  **末桶不足完整时长时按实际区间长度计算覆盖率**。
+- 每条字幕按**区间交集**计入各桶：跨桶字幕被拆分到对应桶，不会重复计数。
+- 每桶覆盖率 = 覆盖毫秒数 ÷ 桶实际时长 × 100%；**严格低于**请求的低覆盖阈值
+  （0–100，可为小数）才标记低覆盖，**等于阈值不标记**。
+- 分桶数量**超过 1000** 即拒绝（错误指向 `bucket_ms`）；
+  分桶时长不大于零、阈值超出 0–100 同样以 422 拒绝并指向责任字段。
+- 解析与时间轴校验、行号错误与空档审校完全一致；覆盖分布使用独立的
+  领域对象（`app/coverage.py`）、请求/响应模型与前端结果状态。
+
 ## 技术栈
 
 | 层 | 技术 |
@@ -37,14 +53,15 @@
 
 ```
 api/                FastAPI 服务
-  app/main.py         路由与统一 422 错误处理
+  app/main.py         路由（/api/review、/api/coverage）与统一 422 错误处理
   app/parser.py       webvtt-py 解析 + 行号定位 + 毫秒归一化
   app/timeline.py     时间轴校验与空档裁决
-  app/schemas.py      Pydantic 模型
-  tests/              pytest（56 用例）
+  app/coverage.py     覆盖分布：分桶、跨桶拆分、低覆盖标记
+  app/schemas.py      Pydantic 模型（审校与覆盖分布各自独立）
+  tests/              pytest（89 用例）
 web/                React + TS + Vite
-  src/                 页面、API 客户端、结果面板
-  tests/e2e/           Playwright 真实联调（10 用例）
+  src/                 页签、审校/覆盖两个页面、API 客户端、结果面板
+  tests/e2e/           Playwright 真实联调（19 用例）
 verify/             一次性验收服务（pytest + Playwright 驱动真实 web/api 容器）
 docker-compose.yml
 ```
@@ -107,6 +124,48 @@ docker-compose.yml
 `parse_error`、`unrecognized_block`、`cue_invalid_range`、`cue_out_of_range`、
 `cues_not_sorted`、`cues_overlap`。
 
+`POST /api/coverage`
+
+```json
+{
+  "content": "WEBVTT\n\n00:00:00.500 --> 00:00:01.500\n跨桶字幕\n",
+  "program_start_ms": 0,
+  "program_end_ms": 2500,
+  "bucket_ms": 1000,
+  "threshold_pct": 50
+}
+```
+
+成功 `200`（桶按时间顺序；末桶 `[2000, 2500)` 只有 500 ms，按实际区间计算）：
+
+```json
+{
+  "buckets": [
+    {"index": 0, "start_ms": 0, "end_ms": 1000, "duration_ms": 1000,
+     "covered_ms": 500, "coverage_pct": 50.0, "low_coverage": false},
+    {"index": 1, "start_ms": 1000, "end_ms": 2000, "duration_ms": 1000,
+     "covered_ms": 500, "coverage_pct": 50.0, "low_coverage": false},
+    {"index": 2, "start_ms": 2000, "end_ms": 2500, "duration_ms": 500,
+     "covered_ms": 250, "coverage_pct": 50.0, "low_coverage": false}
+  ],
+  "bucket_count": 3,
+  "cue_count": 1,
+  "bucket_ms": 1000,
+  "threshold_pct": 50.0,
+  "min_coverage_pct": 50.0,
+  "low_coverage_count": 0
+}
+```
+
+失败 `422`（与空档审校相同的错误结构，整份拒绝）：
+
+```json
+{"error": {"code": "invalid_params", "message": "分桶时长必须是正整数（毫秒）。", "field": "bucket_ms", "line": null}}
+{"error": {"code": "invalid_params", "message": "低覆盖阈值必须介于 0 到 100 之间。", "field": "threshold_pct", "line": null}}
+{"error": {"code": "invalid_params", "message": "分桶时长 1000 ms 将生成 2000 个桶，超过上限 1000 个；…", "field": "bucket_ms", "line": null}}
+{"error": {"code": "parse_error", "message": "第 6 行的时间戳无效：…", "field": null, "line": 6}}
+```
+
 ## 本地开发（真实联调）
 
 ```bash
@@ -125,13 +184,13 @@ cd web && npm install && npm run dev
 ### 测试
 
 ```bash
-# 后端裁决边界（56）
+# 后端裁决边界（89）
 cd api && python -m pytest
 
-# 前端页面状态（17，jsdom + mock fetch）
+# 前端页面状态（35，jsdom + mock fetch）
 cd web && npm test
 
-# 真实浏览器端到端（10，需要一个正在运行的 API 于 :8000）
+# 真实浏览器端到端（19，需要一个正在运行的 API 于 :8000）
 cd web && npx playwright install chromium
 npx playwright test          # 自动启动 Vite，/api 代理到真实 uvicorn
 WEB_URL=http://host:port npx playwright test   # 指向已运行的前端（如 nginx 生产镜像）
