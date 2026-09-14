@@ -10,7 +10,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else 1)"
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"
       interval: 5s
       timeout: 5s
       retries: 12
@@ -25,10 +25,17 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    # The web container is healthy as soon as nginx serves the page itself.
+    # Probe 127.0.0.1 explicitly: in nginx:alpine busybox wget resolves
+    # "localhost" to ::1 first, and nginx is not required to listen on
+    # IPv6 — that made the container report unhealthy forever and the
+    # one-off `verify` service (which waits for service_healthy) never
+    # start. The real Web -> /api -> API integration is exercised by the
+    # `verify` service itself, not coupled to this healthcheck.
     healthcheck:
       test:
         - CMD-SHELL
-        - "wget -q -O - http://localhost/health | grep -q '\"status\":\"ok\"'"
+        - "wget -q -O - http://127.0.0.1/ | grep -q '<div id=\"root\"></div>'"
       interval: 5s
       timeout: 5s
       retries: 12

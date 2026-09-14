@@ -141,3 +141,9 @@ docker compose --profile verify run --rm verify
 验收脚本 `verify/accept.sh`：等待两个健康检查通过 → 验证 `Web → /api → API`
 真实代理链路 → pytest 全量 → Playwright 全量；全部成功输出
 `ALL ACCEPTANCE CHECKS PASSED` 并以 0 退出。
+
+> 健康检查语义：**web 健康只表示 nginx 已在提供页面**（容器内用 busybox
+> `wget` 显式探测 `http://127.0.0.1/`，不使用可能解析到 IPv6 `::1` 的
+> `localhost`，也不反代依赖 API）；**api 健康只表示 uvicorn 已就绪**。
+> Web→API 的代理联调是 `verify` 服务自己的职责，因此不会因网络/代理抖动把
+> “网页已启动”误判为不健康而阻塞验收。
