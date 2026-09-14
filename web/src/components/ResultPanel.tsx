@@ -48,6 +48,9 @@ export function ResultPanel({ result }: { result: ReviewResult }) {
                   {formatMs(gap.start_ms)} → {formatMs(gap.end_ms)}
                 </span>
                 <span data-testid="violation-duration">{gap.duration_ms} ms</span>
+                <span data-testid="violation-limit">
+                  上限 {gap.limit_ms} ms
+                </span>
                 <GapLocation gap={gap} />
               </li>
             ))}
@@ -64,6 +67,7 @@ export function ResultPanel({ result }: { result: ReviewResult }) {
               <th>起 (ms)</th>
               <th>止 (ms)</th>
               <th>时长 (ms)</th>
+              <th>采用上限 (ms)</th>
               <th>位置</th>
             </tr>
           </thead>
@@ -78,6 +82,7 @@ export function ResultPanel({ result }: { result: ReviewResult }) {
                 <td>{gap.start_ms}</td>
                 <td>{gap.end_ms}</td>
                 <td>{gap.duration_ms}</td>
+                <td>{gap.limit_ms}</td>
                 <td>
                   <GapLocation gap={gap} />
                 </td>

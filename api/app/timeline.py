@@ -17,6 +17,8 @@ HEAD = "head"
 BETWEEN = "between"
 TAIL = "tail"
 
+GAP_TYPES = (HEAD, BETWEEN, TAIL)
+
 
 def validate_timeline(
     cues: list[Cue], program_start_ms: int, program_end_ms: int
@@ -75,6 +77,7 @@ class Gap:
     start_ms: int
     end_ms: int
     duration_ms: int
+    limit_ms: int                    # limit applied when adjudicating
     line: int | None = None          # cue line bounding the gap
     to_line: int | None = None       # second cue line for BETWEEN gaps
 
@@ -92,13 +95,20 @@ def review(
     program_start_ms: int,
     program_end_ms: int,
     max_silence_ms: int,
+    gap_limits: dict[str, int] | None = None,
 ) -> Review:
-    """Compute head/between/tail gaps and adjudicate against the limit.
+    """Compute head/between/tail gaps and adjudicate against limits.
 
-    A gap equal to ``max_silence_ms`` passes; anything one millisecond
-    longer is a violation.
+    ``gap_limits`` optionally maps a gap type to its own millisecond
+    ceiling; missing types fall back to ``max_silence_ms``. A gap equal
+    to its limit passes; anything one millisecond longer is a violation.
+    ``max_gap_ms`` always reflects the raw durations, never the limits.
     """
     validate_timeline(cues, program_start_ms, program_end_ms)
+
+    limits = {gap_type: max_silence_ms for gap_type in GAP_TYPES}
+    if gap_limits:
+        limits.update(gap_limits)
 
     gaps: list[Gap] = [
         Gap(
@@ -106,6 +116,7 @@ def review(
             start_ms=program_start_ms,
             end_ms=cues[0].start_ms,
             duration_ms=cues[0].start_ms - program_start_ms,
+            limit_ms=limits[HEAD],
             line=cues[0].line,
         )
     ]
@@ -117,6 +128,7 @@ def review(
                 start_ms=previous.end_ms,
                 end_ms=cue.start_ms,
                 duration_ms=cue.start_ms - previous.end_ms,
+                limit_ms=limits[BETWEEN],
                 line=previous.line,
                 to_line=cue.line,
             )
@@ -128,11 +140,12 @@ def review(
             start_ms=cues[-1].end_ms,
             end_ms=program_end_ms,
             duration_ms=program_end_ms - cues[-1].end_ms,
+            limit_ms=limits[TAIL],
             line=cues[-1].line,
         )
     )
 
-    violations = [gap for gap in gaps if gap.duration_ms > max_silence_ms]
+    violations = [gap for gap in gaps if gap.duration_ms > gap.limit_ms]
     return Review(
         passed=not violations,
         max_gap_ms=max(gap.duration_ms for gap in gaps),

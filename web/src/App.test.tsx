@@ -17,9 +17,9 @@ const passingResult: ReviewResult = {
   max_gap_ms: 1500,
   cue_count: 2,
   gaps: [
-    { type: "head", start_ms: 0, end_ms: 0, duration_ms: 0, line: 3, to_line: null },
-    { type: "between", start_ms: 2000, end_ms: 3500, duration_ms: 1500, line: 3, to_line: 6 },
-    { type: "tail", start_ms: 4000, end_ms: 4000, duration_ms: 0, line: 6, to_line: null },
+    { type: "head", start_ms: 0, end_ms: 0, duration_ms: 0, limit_ms: 1500, line: 3, to_line: null },
+    { type: "between", start_ms: 2000, end_ms: 3500, duration_ms: 1500, limit_ms: 1500, line: 3, to_line: 6 },
+    { type: "tail", start_ms: 4000, end_ms: 4000, duration_ms: 0, limit_ms: 1500, line: 6, to_line: null },
   ],
   violations: [],
 };
@@ -29,12 +29,12 @@ const failingResult: ReviewResult = {
   max_gap_ms: 2500,
   cue_count: 2,
   gaps: [
-    { type: "head", start_ms: 0, end_ms: 0, duration_ms: 0, line: 3, to_line: null },
-    { type: "between", start_ms: 2000, end_ms: 4500, duration_ms: 2500, line: 3, to_line: 6 },
-    { type: "tail", start_ms: 5000, end_ms: 5000, duration_ms: 0, line: 6, to_line: null },
+    { type: "head", start_ms: 0, end_ms: 0, duration_ms: 0, limit_ms: 1500, line: 3, to_line: null },
+    { type: "between", start_ms: 2000, end_ms: 4500, duration_ms: 2500, limit_ms: 1500, line: 3, to_line: 6 },
+    { type: "tail", start_ms: 5000, end_ms: 5000, duration_ms: 0, limit_ms: 1500, line: 6, to_line: null },
   ],
   violations: [
-    { type: "between", start_ms: 2000, end_ms: 4500, duration_ms: 2500, line: 3, to_line: 6 },
+    { type: "between", start_ms: 2000, end_ms: 4500, duration_ms: 2500, limit_ms: 1500, line: 3, to_line: 6 },
   ],
 };
 
@@ -203,6 +203,118 @@ describe("App page states", () => {
     expect(body.program_start_ms).toBe(0);
     expect(body.program_end_ms).toBe(9000);
     expect(body.max_silence_ms).toBe(1500);
+    expect(body).not.toHaveProperty("gap_limits");
     expect(typeof body.content).toBe("string");
+  });
+
+  it("omits gap_limits while the category toggle is off", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse(passingResult));
+    render(<App />);
+    await fillAndSubmit();
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string);
+    expect(body).not.toHaveProperty("gap_limits");
+  });
+
+  it("posts gap_limits with head/between/tail when enabled and filled", async () => {
+    vi.mocked(fetch).mockResolvedValue(jsonResponse(passingResult));
+    render(<App />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId("gap-limits-toggle"));
+    await user.type(screen.getByTestId("input-gap-head"), "800");
+    await user.type(screen.getByTestId("input-gap-between"), "1200");
+    await user.type(screen.getByTestId("input-gap-tail"), "2000");
+    await user.click(screen.getByTestId("submit"));
+
+    await screen.findByTestId("verdict");
+    const body = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string);
+    expect(body.gap_limits).toEqual({ head: 800, between: 1200, tail: 2000 });
+  });
+
+  it.each([
+    ["empty", ""],
+    ["fractional", "1.5"],
+    ["negative", "-1"],
+  ])(
+    "blocks the request when a category limit is %s and reports it next to the input",
+    async (_case, raw) => {
+      render(<App />);
+      const user = userEvent.setup();
+      await user.click(screen.getByTestId("gap-limits-toggle"));
+      await user.type(screen.getByTestId("input-gap-head"), "800");
+      await user.type(screen.getByTestId("input-gap-between"), "1200");
+      if (raw !== "") {
+        await user.type(screen.getByTestId("input-gap-tail"), raw);
+      }
+      await user.click(screen.getByTestId("submit"));
+
+      expect(
+        await screen.findByTestId("input-gap-tail-error"),
+      ).toBeInTheDocument();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(screen.queryByTestId("verdict")).not.toBeInTheDocument();
+    },
+  );
+
+  it("retains category values after closing and reopening the toggle", async () => {
+    render(<App />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByTestId("gap-limits-toggle"));
+    await user.type(screen.getByTestId("input-gap-head"), "800");
+    await user.type(screen.getByTestId("input-gap-between"), "1200");
+    await user.type(screen.getByTestId("input-gap-tail"), "2000");
+    await user.click(screen.getByTestId("gap-limits-toggle"));
+    expect(screen.queryByTestId("input-gap-head")).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("gap-limits-toggle"));
+    expect(screen.getByTestId("input-gap-head")).toHaveValue(800);
+    expect(screen.getByTestId("input-gap-between")).toHaveValue(1200);
+    expect(screen.getByTestId("input-gap-tail")).toHaveValue(2000);
+  });
+
+  it("routes a nested gap_limits field error to its category input", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      jsonResponse(
+        {
+          error: {
+            code: "invalid_params",
+            message: "片头分类上限必须是非负整数毫秒值。",
+            field: "gap_limits.head",
+            line: null,
+          },
+        },
+        422,
+      ),
+    );
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId("gap-limits-toggle"));
+    await user.type(screen.getByTestId("input-gap-head"), "800");
+    await user.type(screen.getByTestId("input-gap-between"), "1200");
+    await user.type(screen.getByTestId("input-gap-tail"), "2000");
+    await user.click(screen.getByTestId("submit"));
+
+    expect(await screen.findByTestId("input-gap-head-error")).toHaveTextContent(
+      "非负整数",
+    );
+    expect(screen.queryByTestId("source-error")).not.toBeInTheDocument();
+  });
+
+  it("shows the applied per-category limit on a violation", async () => {
+    const categoryResult: ReviewResult = {
+      ...failingResult,
+      gaps: failingResult.gaps.map((g) => ({ ...g, limit_ms: 900 })),
+      violations: [
+        { ...failingResult.violations[0], limit_ms: 900 },
+      ],
+    };
+    vi.mocked(fetch).mockResolvedValue(jsonResponse(categoryResult));
+    render(<App />);
+    await fillAndSubmit();
+
+    expect(await screen.findByTestId("violation-limit")).toHaveTextContent(
+      "上限 900 ms",
+    );
   });
 });

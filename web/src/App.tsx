@@ -1,6 +1,8 @@
 import { useState } from "react";
 import {
   type ApiError,
+  type GapLimits,
+  type GapType,
   type ReviewInput,
   type ReviewResult,
   postReview,
@@ -20,11 +22,14 @@ const SAMPLE_VTT = `WEBVTT
 片尾再见
 `;
 
+type GapLimitField = `gap_limits.${GapType}`;
 type FieldName =
   | "content"
   | "program_start_ms"
   | "program_end_ms"
-  | "max_silence_ms";
+  | "max_silence_ms"
+  | "gap_limits"
+  | GapLimitField;
 
 type FieldErrors = Partial<Record<FieldName, string>>;
 
@@ -33,7 +38,17 @@ const FIELD_LABELS: Record<FieldName, string> = {
   program_start_ms: "节目开始时间",
   program_end_ms: "节目结束时间",
   max_silence_ms: "允许静默上限",
+  gap_limits: "分类上限",
+  "gap_limits.head": "片头分类上限",
+  "gap_limits.between": "字幕间分类上限",
+  "gap_limits.tail": "片尾分类上限",
 };
+
+const GAP_LIMIT_FIELDS: { key: GapType; testid: string; label: string }[] = [
+  { key: "head", testid: "input-gap-head", label: "片头空档上限" },
+  { key: "between", testid: "input-gap-between", label: "字幕间上限" },
+  { key: "tail", testid: "input-gap-tail", label: "片尾空档上限" },
+];
 
 const INTEGER_RE = /^\d+$/;
 
@@ -48,6 +63,13 @@ export function App() {
   const [programStart, setProgramStart] = useState("0");
   const [programEnd, setProgramEnd] = useState("9000");
   const [maxSilence, setMaxSilence] = useState("1500");
+
+  // Toggling the category limits off keeps falling back to max_silence_ms;
+  // the three values are retained so re-opening restores this submission.
+  const [gapLimitsEnabled, setGapLimitsEnabled] = useState(false);
+  const [gapLimitValues, setGapLimitValues] = useState<Record<GapType, string>>(
+    { head: "", between: "", tail: "" },
+  );
 
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [sourceError, setSourceError] = useState<ApiError | null>(null);
@@ -76,6 +98,23 @@ export function App() {
       errors.max_silence_ms = "允许静默上限必须是非负整数毫秒。";
     }
 
+    let gapLimits: GapLimits | undefined;
+    if (gapLimitsEnabled) {
+      gapLimits = { head: 0, between: 0, tail: 0 };
+      for (const { key } of GAP_LIMIT_FIELDS) {
+        const raw = gapLimitValues[key];
+        const value = parseInteger(raw);
+        const field = `gap_limits.${key}` as GapLimitField;
+        if (raw.trim() === "") {
+          errors[field] = `${FIELD_LABELS[field]}不能为空，请填写非负整数毫秒。`;
+        } else if (value === null) {
+          errors[field] = `${FIELD_LABELS[field]}必须是非负整数毫秒。`;
+        } else {
+          gapLimits[key] = value;
+        }
+      }
+    }
+
     if (start !== null && end !== null && start >= end) {
       errors.program_end_ms =
         `节目结束时间（${end} ms）必须晚于开始时间（${start} ms）。`;
@@ -84,12 +123,16 @@ export function App() {
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) return null;
 
-    return {
+    const input: ReviewInput = {
       content,
       program_start_ms: start as number,
       program_end_ms: end as number,
       max_silence_ms: limit as number,
     };
+    if (gapLimitsEnabled) {
+      input.gap_limits = gapLimits as GapLimits;
+    }
+    return input;
   }
 
   async function handleSubmit(event: React.FormEvent) {
@@ -110,10 +153,7 @@ export function App() {
       setResult(reviewResult);
     } catch (error) {
       const apiError = error as ApiError;
-      if (
-        apiError.field &&
-        (apiError.field as FieldName) in FIELD_LABELS
-      ) {
+      if (apiError.field && apiError.field in FIELD_LABELS) {
         setFieldErrors({ [apiError.field as FieldName]: apiError.message });
       } else {
         setSourceError(apiError);
@@ -184,6 +224,66 @@ export function App() {
             "input-limit",
           )}
         </div>
+
+        <label className="field field--toggle">
+          <input
+            type="checkbox"
+            checked={gapLimitsEnabled}
+            data-testid="gap-limits-toggle"
+            onChange={(event) => setGapLimitsEnabled(event.target.checked)}
+          />
+          <span>
+            分类上限
+            <em>
+              开启后分别设置片头、字幕间、片尾空档上限；关闭时统一使用允许静默上限
+            </em>
+          </span>
+        </label>
+        {fieldErrors.gap_limits && (
+          <span
+            className="field__error"
+            role="alert"
+            data-testid="gap-limits-error"
+          >
+            {fieldErrors.gap_limits}
+          </span>
+        )}
+
+        {gapLimitsEnabled && (
+          <div className="form__row form__row--gap-limits">
+            {GAP_LIMIT_FIELDS.map(({ key, testid, label }) => {
+              const field = `gap_limits.${key}` as GapLimitField;
+              return (
+                <label className="field" key={key}>
+                  <span>
+                    {label}
+                    <em>(ms)</em>
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={gapLimitValues[key]}
+                    placeholder="非负整数"
+                    data-testid={testid}
+                    aria-invalid={Boolean(fieldErrors[field])}
+                    onChange={(event) =>
+                      setGapLimitValues((previous) => ({
+                        ...previous,
+                        [key]: event.target.value,
+                      }))
+                    }
+                  />
+                  {fieldErrors[field] && (
+                    <span className="field__error" data-testid={`${testid}-error`}>
+                      {fieldErrors[field]}
+                    </span>
+                  )}
+                </label>
+              );
+            })}
+          </div>
+        )}
 
         <label className="field field--full">
           <span>{FIELD_LABELS.content}</span>

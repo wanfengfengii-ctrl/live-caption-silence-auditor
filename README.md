@@ -11,6 +11,11 @@
   最后一条字幕结束 → 节目结束（片尾）。
 - 首尾相接的空档为 **0 ms**；空档时长 **等于**允许上限判为合格；
   **超过上限 1 ms** 即违规。
+- **分类上限**（可选）：开启后分别为片头 `head`、字幕间 `between`、片尾 `tail`
+  指定独立上限；三段空档各自按对应上限裁决，`max_silence_ms` 对这三类不再生效。
+  三项**必须同时提供**，整组缺项或出现未知类型都按 422 拒绝（错误指向
+  `gap_limits`）；省略 `gap_limits` 时三类空档统一使用 `max_silence_ms`，
+  响应字段与裁决结果与旧版本一致。
 - 时间轴校验：字幕按开始时间**严格升序**、结束晚于开始、**互不重叠**（允许端点相接）、
   完全位于节目区间 `[开始, 结束]` 内。
 - **仅含文件头而无字幕块一律拒绝**（即使只有 NOTE/STYLE/REGION 块）。
@@ -36,10 +41,10 @@ api/                FastAPI 服务
   app/parser.py       webvtt-py 解析 + 行号定位 + 毫秒归一化
   app/timeline.py     时间轴校验与空档裁决
   app/schemas.py      Pydantic 模型
-  tests/              pytest（35 用例）
+  tests/              pytest（56 用例）
 web/                React + TS + Vite
   src/                 页面、API 客户端、结果面板
-  tests/e2e/           Playwright 真实联调（6 用例）
+  tests/e2e/           Playwright 真实联调（10 用例）
 verify/             一次性验收服务（pytest + Playwright 驱动真实 web/api 容器）
 docker-compose.yml
 ```
@@ -57,7 +62,21 @@ docker-compose.yml
 }
 ```
 
-成功 `200`：
+可选地按空档类型分别设置上限（`head` / `between` / `tail` 三项须同时给出，
+均为非负整数毫秒）：
+
+```json
+{
+  "content": "WEBVTT\n\n…\n",
+  "program_start_ms": 0,
+  "program_end_ms": 9000,
+  "max_silence_ms": 1500,
+  "gap_limits": {"head": 2000, "between": 500, "tail": 3000}
+}
+```
+
+成功 `200`（每段空档都带本次采用的 `limit_ms`；省略 `gap_limits` 时等于
+`max_silence_ms`）：
 
 ```json
 {
@@ -65,17 +84,23 @@ docker-compose.yml
   "max_gap_ms": 1000,
   "cue_count": 3,
   "gaps": [
-    {"type": "head", "start_ms": 0, "end_ms": 1000, "duration_ms": 1000, "line": 3, "to_line": null}
+    {"type": "head", "start_ms": 0, "end_ms": 1000, "duration_ms": 1000,
+     "limit_ms": 1500, "line": 3, "to_line": null}
   ],
   "violations": []
 }
 ```
+
+`max_gap_ms` 始终按**原始空档时长**计算，与分类上限无关；违规判定为
+`duration_ms` **严格大于**该段的 `limit_ms`。
 
 失败 `422`（整份拒绝，无任何审校字段）：
 
 ```json
 {"error": {"code": "parse_error", "message": "第 6 行的时间戳无效：…", "field": null, "line": 6}}
 {"error": {"code": "invalid_program_range", "message": "…", "field": "program_end_ms", "line": null}}
+{"error": {"code": "invalid_params", "message": "缺少分类上限字段：tail。", "field": "gap_limits", "line": null}}
+{"error": {"code": "invalid_params", "message": "片头分类上限必须是非负整数毫秒值。", "field": "gap_limits.head", "line": null}}
 ```
 
 错误码：`invalid_params`、`invalid_program_range`、`invalid_header`、`empty_document`、
@@ -100,13 +125,13 @@ cd web && npm install && npm run dev
 ### 测试
 
 ```bash
-# 后端裁决边界（35）
+# 后端裁决边界（56）
 cd api && python -m pytest
 
-# 前端页面状态（9，jsdom + mock fetch）
+# 前端页面状态（17，jsdom + mock fetch）
 cd web && npm test
 
-# 真实浏览器端到端（6，需要一个正在运行的 API 于 :8000）
+# 真实浏览器端到端（10，需要一个正在运行的 API 于 :8000）
 cd web && npx playwright install chromium
 npx playwright test          # 自动启动 Vite，/api 代理到真实 uvicorn
 WEB_URL=http://host:port npx playwright test   # 指向已运行的前端（如 nginx 生产镜像）

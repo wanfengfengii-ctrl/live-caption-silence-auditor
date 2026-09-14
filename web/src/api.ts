@@ -1,10 +1,13 @@
 export type GapType = "head" | "between" | "tail";
 
+export type GapLimits = Record<GapType, number>;
+
 export interface Gap {
   type: GapType;
   start_ms: number;
   end_ms: number;
   duration_ms: number;
+  limit_ms: number;
   line: number | null;
   to_line: number | null;
 }
@@ -29,6 +32,7 @@ export interface ReviewInput {
   program_start_ms: number;
   program_end_ms: number;
   max_silence_ms: number;
+  gap_limits?: GapLimits;
 }
 
 export async function postReview(input: ReviewInput): Promise<ReviewResult> {

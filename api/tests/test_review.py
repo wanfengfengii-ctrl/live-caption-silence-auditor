@@ -37,6 +37,19 @@ def review(content, start, end, limit):
     )
 
 
+def review_limits(content, start, end, limit, gap_limits):
+    return client.post(
+        "/api/review",
+        json={
+            "content": content,
+            "program_start_ms": start,
+            "program_end_ms": end,
+            "max_silence_ms": limit,
+            "gap_limits": gap_limits,
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Adjudication boundaries
 # ---------------------------------------------------------------------------
@@ -354,6 +367,158 @@ def test_error_never_contains_partial_review():
     assert set(top.keys()) == {"error"}
     assert "violations" not in top
     assert "max_gap_ms" not in top
+
+
+# ---------------------------------------------------------------------------
+# Per-category gap limits (head / between / tail)
+# ---------------------------------------------------------------------------
+
+
+# Program 0..5000 with cues [1000,2000] and [3000,4000]: all three gaps
+# (head, between, tail) are exactly 1000 ms long.
+EQUAL_GAPS_VTT = vtt(cue(1000, 2000), cue(3000, 4000))
+EQUAL_GAPS_RANGE = (0, 5000)
+
+
+def test_omitted_gap_limits_uses_max_silence_and_reports_limit_ms():
+    body = vtt(cue(1000, 2000), cue(3000, 4000))
+    data = review(body, 0, 5000, 1500).json()
+    assert [g["duration_ms"] for g in data["gaps"]] == [1000, 1000, 1000]
+    # Every gap reports the limit it was adjudicated against.
+    assert [g["limit_ms"] for g in data["gaps"]] == [1500, 1500, 1500]
+    assert data["passed"] is True
+    assert data["violations"] == []
+
+
+def test_without_gap_limits_response_is_identical_to_current_version():
+    body = vtt(cue(1000, 2000), cue(3000, 4000))
+    without = review(body, 0, 5000, 900).json()
+    # Supplying identical per-category limits must match omitting them.
+    with_limits = review_limits(
+        body, 0, 5000, 900, {"head": 900, "between": 900, "tail": 900}
+    ).json()
+    assert with_limits["passed"] == without["passed"]
+    assert with_limits["max_gap_ms"] == without["max_gap_ms"]
+    assert [(g["type"], g["duration_ms"]) for g in with_limits["gaps"]] == \
+        [(g["type"], g["duration_ms"]) for g in without["gaps"]]
+    assert [g["limit_ms"] for g in with_limits["gaps"]] == [900, 900, 900]
+    assert with_limits["violations"] and without["violations"]
+    assert with_limits["violations"][0]["limit_ms"] == 900
+
+
+def test_same_length_gaps_adjudicated_differently_by_category():
+    # All three gaps are 1000 ms; only between has a ceiling below that.
+    data = review_limits(
+        EQUAL_GAPS_VTT, *EQUAL_GAPS_RANGE, 10000,
+        {"head": 1000, "between": 999, "tail": 2000},
+    ).json()
+    assert [g["limit_ms"] for g in data["gaps"]] == [1000, 999, 2000]
+    assert data["passed"] is False
+    assert [v["type"] for v in data["violations"]] == ["between"]
+    # max_gap_ms is computed from raw durations, independent of limits.
+    assert data["max_gap_ms"] == 1000
+
+
+def test_category_selection_flags_head_and_tail_not_between():
+    # Same 1000 ms gaps, but head/tail ceilings are tight and between is loose.
+    data = review_limits(
+        EQUAL_GAPS_VTT, *EQUAL_GAPS_RANGE, 10000,
+        {"head": 999, "between": 2000, "tail": 999},
+    ).json()
+    assert [v["type"] for v in data["violations"]] == ["head", "tail"]
+
+
+def test_gap_equal_to_category_limit_passes():
+    # 1000 ms gaps against a 1000 ms per-category ceiling: equality passes.
+    data = review_limits(
+        EQUAL_GAPS_VTT, *EQUAL_GAPS_RANGE, 0,
+        {"head": 1000, "between": 1000, "tail": 1000},
+    ).json()
+    assert data["passed"] is True
+    assert data["violations"] == []
+    # max_silence_ms (0) is ignored entirely when categories are supplied.
+    assert [g["limit_ms"] for g in data["gaps"]] == [1000, 1000, 1000]
+
+
+def test_one_ms_over_category_limit_fails():
+    data = review_limits(
+        EQUAL_GAPS_VTT, *EQUAL_GAPS_RANGE, 10000,
+        {"head": 1000, "between": 999, "tail": 1000},
+    ).json()
+    viol = data["violations"][0]
+    assert viol["type"] == "between"
+    assert viol["duration_ms"] == 1000
+    assert viol["limit_ms"] == 999
+
+
+def test_limit_ms_present_on_every_gap_and_every_violation():
+    data = review_limits(
+        EQUAL_GAPS_VTT, *EQUAL_GAPS_RANGE, 10000,
+        {"head": 100, "between": 200, "tail": 300},
+    ).json()
+    by_type = {g["type"]: g["limit_ms"] for g in data["gaps"]}
+    assert by_type == {"head": 100, "between": 200, "tail": 300}
+    assert all("limit_ms" in v for v in data["violations"])
+    assert {v["type"]: v["limit_ms"] for v in data["violations"]} == by_type
+
+
+@pytest.mark.parametrize("gap_limits", [
+    {"between": 1, "tail": 2},                          # missing head
+    {"head": 1, "tail": 2},                             # missing between
+    {"head": 1, "between": 2},                          # missing tail
+    {"head": 1, "between": 2, "tail": 3, "middle": 4},  # unknown type
+])
+def test_incomplete_or_unknown_gap_limits_rejected(gap_limits):
+    r = review_limits(vtt(cue(0, 1000)), 0, 1000, 0, gap_limits)
+    assert r.status_code == 422
+    err = r.json()["error"]
+    assert err["code"] == "invalid_params"
+    assert err["field"] == "gap_limits"
+    assert set(r.json().keys()) == {"error"}
+
+
+@pytest.mark.parametrize("member,value", [
+    ("head", -1),
+    ("between", -5),
+    ("tail", -1),
+    ("head", 1.5),
+    ("between", "2000"),
+    ("tail", True),
+])
+def test_invalid_category_value_rejected_under_gap_limits(member, value):
+    gap_limits = {"head": 1000, "between": 1000, "tail": 1000}
+    gap_limits[member] = value
+    r = review_limits(vtt(cue(0, 1000)), 0, 1000, 0, gap_limits)
+    assert r.status_code == 422
+    err = r.json()["error"]
+    assert err["code"] == "invalid_params"
+    assert err["field"] == f"gap_limits.{member}"
+    # Whole input rejected: never a partial review alongside the error.
+    assert "gaps" not in r.json() and "violations" not in r.json()
+
+
+@pytest.mark.parametrize("bad", [[1, 2, 3], "head:1", 42])
+def test_non_object_gap_limits_rejected(bad):
+    payload = {
+        "content": vtt(cue(0, 1000)),
+        "program_start_ms": 0,
+        "program_end_ms": 1000,
+        "max_silence_ms": 0,
+        "gap_limits": bad,
+    }
+    r = client.post("/api/review", json=payload)
+    assert r.status_code == 422
+    assert r.json()["error"]["field"] == "gap_limits"
+
+
+def test_gap_limits_allows_zero_category_ceilings():
+    # 0 ceiling: only touching gaps pass; the three 1000 ms gaps all violate.
+    data = review_limits(
+        EQUAL_GAPS_VTT, *EQUAL_GAPS_RANGE, 0,
+        {"head": 0, "between": 0, "tail": 0},
+    ).json()
+    assert data["passed"] is False
+    assert [v["type"] for v in data["violations"]] == ["head", "between", "tail"]
 
 
 def test_health():

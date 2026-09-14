@@ -79,3 +79,84 @@ test("时间轴违规：重叠字幕按原始行号拒绝", async ({ page }: { p
   await expect(page.getByTestId("source-error")).toBeVisible();
   await expect(page.getByTestId("source-error-line")).toHaveText("6");
 });
+
+// Two cues in 0..5000ms produce three gaps of exactly 1000ms each:
+// head 0->1000, between 2000->3000, tail 4000->5000.
+const EQUAL_GAPS_VTT =
+  "WEBVTT\n\n" +
+  "00:00:01.000 --> 00:00:02.000\n第一条\n\n" +
+  "00:00:03.000 --> 00:00:04.000\n第二条\n";
+
+async function enableCategoryLimits(page: Page) {
+  await page.getByTestId("input-start").fill("0");
+  await page.getByTestId("input-end").fill("5000");
+  await page.getByTestId("input-vtt").fill(EQUAL_GAPS_VTT);
+  await page.getByTestId("gap-limits-toggle").check();
+}
+
+test("分类上限：三段等长空档按不同分类上限产生不同判定", async ({ page }: { page: Page }) => {
+  await page.goto("/");
+  await enableCategoryLimits(page);
+  await page.getByTestId("input-gap-head").fill("1000");
+  await page.getByTestId("input-gap-between").fill("999");
+  await page.getByTestId("input-gap-tail").fill("2000");
+  await submit(page);
+
+  await expect(page.getByTestId("verdict")).toHaveText("❌ 审校不通过");
+  // Only the 字幕间隙 gap (1000ms > 999ms) violates; head equals its limit
+  // and tail is well under its limit.
+  const violations = page.getByTestId("violation");
+  await expect(violations).toHaveCount(1);
+  await expect(violations.first()).toContainText("字幕间隙");
+  await expect(violations.first()).toContainText("上限 999 ms");
+  // max_gap_ms is the raw largest gap (1000), independent of limits.
+  await expect(page.getByTestId("max-gap")).toHaveText("1000");
+});
+
+test("分类上限：空档时长等于分类上限时通过", async ({ page }: { page: Page }) => {
+  await page.goto("/");
+  await enableCategoryLimits(page);
+  await page.getByTestId("input-gap-head").fill("1000");
+  await page.getByTestId("input-gap-between").fill("1000");
+  await page.getByTestId("input-gap-tail").fill("1000");
+  await submit(page);
+
+  await expect(page.getByTestId("verdict")).toHaveText("✅ 审校通过");
+  await expect(page.getByTestId("violation")).toHaveCount(0);
+});
+
+test("分类上限：关闭后重新开启保留本次已填值", async ({ page }: { page: Page }) => {
+  await page.goto("/");
+  await page.getByTestId("gap-limits-toggle").check();
+  await page.getByTestId("input-gap-head").fill("800");
+  await page.getByTestId("input-gap-between").fill("1200");
+  await page.getByTestId("input-gap-tail").fill("2000");
+
+  await page.getByTestId("gap-limits-toggle").uncheck();
+  await expect(page.getByTestId("input-gap-head")).toHaveCount(0);
+  await page.getByTestId("gap-limits-toggle").check();
+  await expect(page.getByTestId("input-gap-head")).toHaveValue("800");
+  await expect(page.getByTestId("input-gap-between")).toHaveValue("1200");
+  await expect(page.getByTestId("input-gap-tail")).toHaveValue("2000");
+});
+
+test("分类上限：分类值非法（负数）时在输入旁反馈且不发送请求", async ({ page }: { page: Page }) => {
+  await page.goto("/");
+  let reviewRequested = false;
+  await page.route("**/api/review", (route) => {
+    reviewRequested = true;
+    route.continue();
+  });
+  await enableCategoryLimits(page);
+  await page.getByTestId("input-gap-head").fill("1000");
+  await page.getByTestId("input-gap-between").fill("1000");
+  await page.getByTestId("input-gap-tail").fill("-1");
+  await submit(page);
+
+  await expect(page.getByTestId("input-gap-tail-error")).toBeVisible();
+  await expect(page.getByTestId("input-gap-tail-error")).toContainText("非负整数");
+  await expect(page.getByTestId("verdict")).toHaveCount(0);
+  // Give any (incorrect) in-flight request a moment, then assert none fired.
+  await page.waitForTimeout(300);
+  expect(reviewRequested).toBe(false);
+});
