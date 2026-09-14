@@ -86,6 +86,19 @@ class ReviewRequest(BaseModel):
             raise ValueError("必须是非负整数毫秒值")
         return value
 
+    @field_validator("gap_limits", mode="before")
+    @classmethod
+    def _reject_explicit_null(cls, value: Any) -> Any:
+        # An explicit null is not the same as omitting the field: falling
+        # back to max_silence_ms would silently adjudicate against a rule
+        # the requester never asked for. (Not called when the field is
+        # absent, so omission still selects the uniform limit.)
+        if value is None:
+            raise ValueError(
+                "分类上限不能为 null；如需统一上限请省略 gap_limits 字段。"
+            )
+        return value
+
 
 class GapModel(BaseModel):
     type: str

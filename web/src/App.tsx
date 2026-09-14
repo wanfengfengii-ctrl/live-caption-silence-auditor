@@ -52,10 +52,29 @@ const GAP_LIMIT_FIELDS: { key: GapType; testid: string; label: string }[] = [
 
 const INTEGER_RE = /^\d+$/;
 
+// Number() represents integers exactly only up to 2^53 - 1; beyond that a
+// threshold would be silently rounded (and an overflowing value would even
+// serialize as null), so such input is rejected at the field instead of
+// submitting a value the user never typed.
+const MAX_PRECISE_MS = Number.MAX_SAFE_INTEGER;
+
 function parseInteger(raw: string): number | null {
   const trimmed = raw.trim();
   if (!INTEGER_RE.test(trimmed)) return null;
-  return Number(trimmed);
+  const value = Number(trimmed);
+  if (!Number.isSafeInteger(value)) return null;
+  return value;
+}
+
+function integerErrorMessage(label: string, raw: string): string {
+  // A pure-digit value that failed to parse exceeds the precise range.
+  if (INTEGER_RE.test(raw.trim())) {
+    return (
+      `${label}超出可精确表示的整数范围，` +
+      `请填写不超过 ${MAX_PRECISE_MS} 的非负整数毫秒。`
+    );
+  }
+  return `${label}必须是非负整数毫秒。`;
 }
 
 export function App() {
@@ -74,6 +93,8 @@ export function App() {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [sourceError, setSourceError] = useState<ApiError | null>(null);
   const [result, setResult] = useState<ReviewResult | null>(null);
+  // While a review is in flight every config input is locked, so the
+  // returned verdict can never be displayed under an edited configuration.
   const [loading, setLoading] = useState(false);
 
   function buildInput(): ReviewInput | null {
@@ -85,17 +106,26 @@ export function App() {
 
     const start = parseInteger(programStart);
     if (start === null) {
-      errors.program_start_ms = "节目开始时间必须是非负整数毫秒。";
+      errors.program_start_ms = integerErrorMessage(
+        FIELD_LABELS.program_start_ms,
+        programStart,
+      );
     }
 
     const end = parseInteger(programEnd);
     if (end === null) {
-      errors.program_end_ms = "节目结束时间必须是非负整数毫秒。";
+      errors.program_end_ms = integerErrorMessage(
+        FIELD_LABELS.program_end_ms,
+        programEnd,
+      );
     }
 
     const limit = parseInteger(maxSilence);
     if (limit === null) {
-      errors.max_silence_ms = "允许静默上限必须是非负整数毫秒。";
+      errors.max_silence_ms = integerErrorMessage(
+        FIELD_LABELS.max_silence_ms,
+        maxSilence,
+      );
     }
 
     let gapLimits: GapLimits | undefined;
@@ -108,7 +138,7 @@ export function App() {
         if (raw.trim() === "") {
           errors[field] = `${FIELD_LABELS[field]}不能为空，请填写非负整数毫秒。`;
         } else if (value === null) {
-          errors[field] = `${FIELD_LABELS[field]}必须是非负整数毫秒。`;
+          errors[field] = integerErrorMessage(FIELD_LABELS[field], raw);
         } else {
           gapLimits[key] = value;
         }
@@ -180,6 +210,7 @@ export function App() {
         min={0}
         step={1}
         value={value}
+        disabled={loading}
         data-testid={testid}
         aria-invalid={Boolean(fieldErrors[name])}
         onChange={(event) => onChange(event.target.value)}
@@ -229,6 +260,7 @@ export function App() {
           <input
             type="checkbox"
             checked={gapLimitsEnabled}
+            disabled={loading}
             data-testid="gap-limits-toggle"
             onChange={(event) => setGapLimitsEnabled(event.target.checked)}
           />
@@ -265,6 +297,7 @@ export function App() {
                     step={1}
                     value={gapLimitValues[key]}
                     placeholder="非负整数"
+                    disabled={loading}
                     data-testid={testid}
                     aria-invalid={Boolean(fieldErrors[field])}
                     onChange={(event) =>
@@ -291,6 +324,7 @@ export function App() {
             value={content}
             rows={14}
             spellCheck={false}
+            disabled={loading}
             data-testid="input-vtt"
             aria-invalid={Boolean(fieldErrors.content)}
             onChange={(event) => setContent(event.target.value)}

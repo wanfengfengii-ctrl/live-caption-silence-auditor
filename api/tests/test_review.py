@@ -511,6 +511,18 @@ def test_non_object_gap_limits_rejected(bad):
     assert r.json()["error"]["field"] == "gap_limits"
 
 
+def test_explicit_null_gap_limits_rejected():
+    # An explicit null is not the same as omitting the field: it must not
+    # silently fall back to the uniform max_silence_ms adjudication.
+    r = review_limits(vtt(cue(0, 1000)), 0, 1000, 0, None)
+    assert r.status_code == 422
+    err = r.json()["error"]
+    assert err["code"] == "invalid_params"
+    assert err["field"] == "gap_limits"
+    # Whole input rejected: never a partial review alongside the error.
+    assert set(r.json().keys()) == {"error"}
+
+
 def test_gap_limits_allows_zero_category_ceilings():
     # 0 ceiling: only touching gaps pass; the three 1000 ms gaps all violate.
     data = review_limits(

@@ -160,3 +160,58 @@ test("分类上限：分类值非法（负数）时在输入旁反馈且不发�
   await page.waitForTimeout(300);
   expect(reviewRequested).toBe(false);
 });
+
+test("分类上限：分类值超出精确范围时在输入旁拒绝且不发送请求", async ({ page }: { page: Page }) => {
+  await page.goto("/");
+  let reviewRequested = false;
+  await page.route("**/api/review", (route) => {
+    reviewRequested = true;
+    route.continue();
+  });
+  await enableCategoryLimits(page);
+  await page.getByTestId("input-gap-head").fill("1000");
+  await page.getByTestId("input-gap-between").fill("1000");
+  // 2^53 + 1 cannot be represented exactly; Number() would silently round it.
+  await page.getByTestId("input-gap-tail").fill("9007199254740993");
+  await submit(page);
+
+  await expect(page.getByTestId("input-gap-tail-error")).toBeVisible();
+  await expect(page.getByTestId("input-gap-tail-error")).toContainText("精确");
+  await expect(page.getByTestId("verdict")).toHaveCount(0);
+  // Give any (incorrect) in-flight request a moment, then assert none fired.
+  await page.waitForTimeout(300);
+  expect(reviewRequested).toBe(false);
+});
+
+test("分类上限：等待审校结果期间表单锁定，结果与当前配置一致", async ({ page }: { page: Page }) => {
+  await page.goto("/");
+  await enableCategoryLimits(page);
+  await page.getByTestId("input-gap-head").fill("1000");
+  await page.getByTestId("input-gap-between").fill("1000");
+  await page.getByTestId("input-gap-tail").fill("1000");
+
+  // Hold the response so the waiting state is observable.
+  let release: () => void = () => {};
+  await page.route("**/api/review", async (route) => {
+    await new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await route.continue();
+  });
+  await submit(page);
+
+  // While the verdict is pending, no threshold (or any other config input)
+  // can be edited, so the returned result always matches the visible form.
+  await expect(page.getByTestId("input-gap-head")).toBeDisabled();
+  await expect(page.getByTestId("input-gap-between")).toBeDisabled();
+  await expect(page.getByTestId("input-gap-tail")).toBeDisabled();
+  await expect(page.getByTestId("gap-limits-toggle")).toBeDisabled();
+  await expect(page.getByTestId("input-start")).toBeDisabled();
+  await expect(page.getByTestId("input-end")).toBeDisabled();
+  await expect(page.getByTestId("input-limit")).toBeDisabled();
+  await expect(page.getByTestId("input-vtt")).toBeDisabled();
+
+  release();
+  await expect(page.getByTestId("verdict")).toHaveText("✅ 审校通过");
+  await expect(page.getByTestId("input-gap-head")).toBeEnabled();
+});

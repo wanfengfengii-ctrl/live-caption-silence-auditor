@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -316,5 +316,91 @@ describe("App page states", () => {
     expect(await screen.findByTestId("violation-limit")).toHaveTextContent(
       "上限 900 ms",
     );
+  });
+
+  it.each([
+    // 2^53 + 1 rounds to ...992 in Number(); the raw string reaches the app.
+    ["rounded beyond 2^53", "9007199254740993", "精确"],
+    // 310 digits overflow Number() to Infinity (which would serialize as
+    // null); jsdom empties such a number input, so the empty message shows.
+    ["overflowing toward null in JSON", "9".repeat(310), "非负整数"],
+  ])(
+    "blocks the request when a category limit is %s and reports it next to the input",
+    async (_case, raw, message) => {
+      render(<App />);
+      const user = userEvent.setup();
+      await user.click(screen.getByTestId("gap-limits-toggle"));
+      await user.type(screen.getByTestId("input-gap-head"), "800");
+      await user.type(screen.getByTestId("input-gap-between"), "1200");
+      fireEvent.change(screen.getByTestId("input-gap-tail"), {
+        target: { value: raw },
+      });
+      await user.click(screen.getByTestId("submit"));
+
+      expect(
+        await screen.findByTestId("input-gap-tail-error"),
+      ).toHaveTextContent(message);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(screen.queryByTestId("verdict")).not.toBeInTheDocument();
+    },
+  );
+
+  it("locks every config input while waiting for the verdict", async () => {
+    let releaseReview: (response: Response) => void = () => {};
+    vi.mocked(fetch).mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          releaseReview = resolve;
+        }),
+    );
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId("gap-limits-toggle"));
+    await user.type(screen.getByTestId("input-gap-head"), "800");
+    await user.type(screen.getByTestId("input-gap-between"), "1200");
+    await user.type(screen.getByTestId("input-gap-tail"), "2000");
+    await user.click(screen.getByTestId("submit"));
+
+    // The submitted configuration cannot be edited while the verdict is
+    // pending, so the result always matches the form it appears under.
+    await waitFor(() =>
+      expect(screen.getByTestId("input-gap-head")).toBeDisabled(),
+    );
+    expect(screen.getByTestId("input-gap-between")).toBeDisabled();
+    expect(screen.getByTestId("input-gap-tail")).toBeDisabled();
+    expect(screen.getByTestId("gap-limits-toggle")).toBeDisabled();
+    expect(screen.getByTestId("input-start")).toBeDisabled();
+    expect(screen.getByTestId("input-end")).toBeDisabled();
+    expect(screen.getByTestId("input-limit")).toBeDisabled();
+    expect(screen.getByTestId("input-vtt")).toBeDisabled();
+
+    releaseReview(jsonResponse(passingResult));
+    expect(await screen.findByTestId("verdict")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId("input-gap-head")).toBeEnabled(),
+    );
+  });
+
+  it("routes a gap_limits object error to the category limits error slot", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      jsonResponse(
+        {
+          error: {
+            code: "invalid_params",
+            message: "分类上限不能为 null；如需统一上限请省略 gap_limits 字段。",
+            field: "gap_limits",
+            line: null,
+          },
+        },
+        422,
+      ),
+    );
+    render(<App />);
+    await fillAndSubmit();
+
+    expect(await screen.findByTestId("gap-limits-error")).toHaveTextContent(
+      "不能为 null",
+    );
+    expect(screen.queryByTestId("source-error")).not.toBeInTheDocument();
   });
 });
